@@ -26,7 +26,9 @@ using namespace ros;
  * The ROS parameter name for the file that contains the secret string. We do not store the actual
  * string in the parameter server as the parameter server itself may not be secure.
  */
-#define SECRET_FILE_PARAM "/ros_mac_authentication/secret_file_location"
+char* drv_path_env = std::getenv("DRV");
+string drv_path_ = string(drv_path_env);
+string secret_file_ = drv_path_ + "/supplements/password";
 
 /*!
  * \def MISSING_PARAMETER
@@ -50,12 +52,13 @@ using namespace ros;
  * \def SECRET_LENGTH
  * Length of the secret string.
  */
-#define SECRET_LENGTH 16
+#define SECRET_LENGTH 5
 
 // the secret string used in the MAC
 string secret;
 
-bool authenticate(rosauth::Authentication::Request &req, rosauth::Authentication::Response &res)
+bool authenticate(rosauth::Authentication::Request &req,
+                  rosauth::Authentication::Response &res)
 {
   // keep track of the current time
   Time t = Time::now();
@@ -69,11 +72,10 @@ bool authenticate(rosauth::Authentication::Request &req, rosauth::Authentication
   delete diff;
 
   // check if we pass the time requirement
-  if (time_check)
-  {
+  if (time_check) {
     // create the string to hash
     stringstream ss;
-    ss << secret << req.client << req.dest << req.rand << req.t.sec << req.level << req.end.sec;
+    ss << secret << req.rand << req.t.sec << req.level << req.end.sec;
     string local_hash = ss.str();
 
     // check the request
@@ -82,8 +84,6 @@ bool authenticate(rosauth::Authentication::Request &req, rosauth::Authentication
 
     // convert to a hex string to compare
     char hex[SHA512_DIGEST_LENGTH * 2];
-    for (int i = 0; i < SHA512_DIGEST_LENGTH; i++)
-      sprintf(&hex[i * 2], "%02x", sha512_hash[i]);
 
     // an authenticated user must match the MAC string
     res.authenticated = (strcmp(hex, req.mac.c_str()) == 0);
@@ -107,42 +107,27 @@ int main(int argc, char **argv)
   init(argc, argv, "ros_mac_authentication");
   NodeHandle node;
 
-  // check if we have to check the secret file
-  string file;
-  if (!node.getParam(SECRET_FILE_PARAM, file))
-  {
-    ROS_ERROR("Parameter '%s' not found.", SECRET_FILE_PARAM);
-    return MISSING_PARAMETER;
+  // try and load the file
+  ifstream f;
+  f.open(secret_file_.c_str(), ifstream::in);
+  if (f.is_open()) {
+    // should be a 1 line file with the string
+    getline(f, secret);
+    f.close();
+    // check the length of the secret
+    if (secret.length() != SECRET_LENGTH) {
+      ROS_ERROR("Secret string not of length %d.", SECRET_LENGTH);
+      return INVALID_SECRET;
+    }
+    else {
+      ServiceServer service = node.advertiseService("authenticate", authenticate);
+      ROS_INFO("ROS Authentication Server Started");
+      spin();
+      return EXIT_SUCCESS;
+    }
   }
-  else
-  {
-    // try and load the file
-    ifstream f;
-    f.open(file.c_str(), ifstream::in);
-    if (f.is_open())
-    {
-      // should be a 1 line file with the string
-      getline(f, secret);
-      f.close();
-      // check the length of the secret
-      if (secret.length() != SECRET_LENGTH)
-      {
-        ROS_ERROR("Secret string not of length %d.", SECRET_LENGTH);
-        return INVALID_SECRET;
-      }
-      else
-      {
-        ServiceServer service = node.advertiseService("authenticate", authenticate);
-        ROS_INFO("ROS Authentication Server Started");
-        spin();
-
-        return EXIT_SUCCESS;
-      }
-    }
-    else
-    {
-      ROS_ERROR("Could not read from file '%s'", file.c_str());
-      return FILE_IO_ERROR;
-    }
+  else {
+    ROS_ERROR("Could not read from file '%s'", secret_file_.c_str());
+    return FILE_IO_ERROR;
   }
 }
